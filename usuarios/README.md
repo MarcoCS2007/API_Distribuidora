@@ -12,7 +12,7 @@ O app `usuarios` centraliza:
 
 - **Autenticação:** emissão e renovação de tokens JWT (`login/` e `login/refresh/`), alinhado ao modelo de usuário customizado com login por **e-mail**.
 - **Cadastro controlado:** endpoint `POST cadastro/` para criação de novos usuários com perfil associado, sujeito a **autenticação** e a regras de **hierarquia** (`PodeCadastrarUsuario`).
-- **Gestão de dados:** ViewSets com CRUD sobre `UsuarioBase`, `PerfilGestor` e `PerfilRepresentante`, restritos a **usuários autenticados**.
+- **Gestão de dados:** ViewSets com CRUD sobre `UsuarioBase`, `PerfilGestor` e `PerfilRepresentante`, protegidos por **`IsLogisticaOrReadOnly`** (leitura para qualquer autenticado; escrita apenas para perfis privilegiados — ver §5.1).
 
 O fluxo típico B2B: obter JWT → (conforme papel) cadastrar ou consultar usuários e perfis via API.
 
@@ -82,14 +82,27 @@ Todas as rotas abaixo são relativas ao prefixo **`/api/usuarios/`**.
 
 ## 5. Regras de Negócio e Segurança
 
-### 5.1 Listagens e CRUD de perfis / usuários
+### 5.1 Listagens e CRUD de perfis / usuários — Princípio do Menor Privilégio (PoLP)
 
-- **`UsuarioBaseViewSet`**, **`PerfilGestorViewSet`** e **`PerfilRepresentanteViewSet`** definem `permission_classes = [IsAuthenticated]`.
-- Apenas usuários com JWT válido podem acessar listagens e operações CRUD desses ViewSets.
+Os três ViewSets — **`UsuarioBaseViewSet`**, **`PerfilGestorViewSet`** e **`PerfilRepresentanteViewSet`** — não usam mais apenas `IsAuthenticated`. Em **`views.py`**, `permission_classes` foi definido como **`[IsLogisticaOrReadOnly]`** (`permissions.py`), alinhando a API ao **Princípio do Menor Privilégio (PoLP)**: cada papel recebe o mínimo de permissões necessárias para o trabalho; escrita fica concentrada em quem opera dados mestres (administração e logística).
+
+Comportamento de **`IsLogisticaOrReadOnly`**:
+
+1. **Autenticação:** requisições não autenticadas são negadas (`401 Unauthorized`, conforme configuração do DRF/JWT).
+
+2. **Leitura (`GET`, `HEAD`, `OPTIONS` — `SAFE_METHODS` do DRF):** **qualquer usuário autenticado** pode consultar listagens e detalhes (gestores e representantes compartilham a visão tipo “lista telefônica” interna de usuários e perfis).
+
+3. **Escrita e modificação (`POST`, `PUT`, `PATCH`, `DELETE`):** permitidas **somente** para:
+   - **Administradores** (`request.user.is_superuser`), ou
+   - **Gestores** (`tipo == 'GESTOR'`) cujo **`perfil_gestor.departamento == 'LOGISTICA'`**.
+
+   **Representantes** e **Gestores de Vendas** que tentarem criar, alterar ou excluir registros por esses ViewSets recebem **`403 Forbidden`**. Gestores sem `perfil_gestor` resolvível (ex.: `AttributeError`) também falham na checagem de escrita e são bloqueados.
+
+Em resumo: leitura ampla entre autenticados; mutação restrita a superusuário e gestão logística — reduzindo superfície de abuso sem impedir a consulta colaborativa.
 
 ### 5.2 Cadastro (`POST cadastro/`)
 
-- **`IsAuthenticated`:** a rota exige token no header (`Authorization: Bearer <access>`), coerente com o padrão global de autenticação JWT do projeto.
+- **Autenticação JWT:** `PodeCadastrarUsuario` nega acesso a não autenticados; envie o token no header (`Authorization: Bearer <access>`).
 - **`PodeCadastrarUsuario`** (`permissions.py`) aplica a hierarquia:
 
 | Quem | Pode cadastrar |
@@ -225,7 +238,7 @@ Em caso de **403 Forbidden**, o usuário autenticado não satisfaz `PodeCadastra
 | `serializers.py` | Serializers de exposição CRUD + `CadastroUsuarioSerializer` |
 | `services.py` | `criar_usuario_com_perfil` — transação e defaults |
 | `views.py` | ViewSets autenticados + `CadastrarUsuarioView` |
-| `permissions.py` | `PodeCadastrarUsuario` — hierarquia de cadastro |
+| `permissions.py` | `PodeCadastrarUsuario`, `IsLogisticaOrReadOnly` — cadastro hierárquico e PoLP nos ViewSets |
 | `urls.py` | Router DRF + JWT + cadastro |
 
 ---
