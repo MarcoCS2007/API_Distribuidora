@@ -23,6 +23,24 @@ class CadastroUsuarioSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
     password_confirm = serializers.CharField(write_only=True)
 
+    departamento = serializers.ChoiceField(
+        choices=PerfilGestor.DEPARTAMENTO_CHOICES,
+        required=False,
+    )
+    ramal_interno = serializers.CharField(max_length=20, required=False, allow_blank=True)
+
+    telefone_contato = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    regiao_atuacao = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    limite_desconto_maximo = serializers.DecimalField(
+        max_digits=5, decimal_places=2, required=False
+    )
+    meta_mensal = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False
+    )
+    percentual_comissao = serializers.DecimalField(
+        max_digits=5, decimal_places=2, required=False
+    )
+
     def validate(self, data):
         password = data.get('password')
         password_confirm = data.get('password_confirm')
