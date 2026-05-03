@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.validators import MinValueValidator
 from core.models import BaseModel 
 
 class Categoria(BaseModel):
@@ -19,7 +20,11 @@ class Produto(BaseModel):
         on_delete=models.PROTECT, 
         related_name='produtos'
     )
-    preco_base = models.DecimalField(max_digits=10, decimal_places=2)
+    preco_base = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0.01)],
+    )
     quantidade_estoque = models.IntegerField(default=0)
 
     def __str__(self):

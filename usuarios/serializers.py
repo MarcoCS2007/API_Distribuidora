@@ -4,17 +4,44 @@ from .models import UsuarioBase, PerfilGestor, PerfilRepresentante
 class UsuarioBaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = UsuarioBase
-        fields = ['id', 'username', 'email', 'tipo']
+        fields = ['id', 'username', 'email', 'tipo', 'password']
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'tipo': {'read_only': True},
+        }
+
+    def create(self, validated_data):
+        password = validated_data.pop('password', None)
+        usuario = UsuarioBase.objects.create(**validated_data)
+        if password:
+            usuario.set_password(password)
+            usuario.save()
+        return usuario
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
 
 class PerfilGestorSerializer(serializers.ModelSerializer):
     class Meta:
         model = PerfilGestor
         fields = '__all__'
+        extra_kwargs = {
+            'usuario': {'read_only': True},
+        }
 
 class PerfilRepresentanteSerializer(serializers.ModelSerializer):
     class Meta:
         model = PerfilRepresentante
         fields = '__all__'
+        extra_kwargs = {
+            'usuario': {'read_only': True},
+        }
 
 class CadastroUsuarioSerializer(serializers.Serializer):
     email = serializers.EmailField()
