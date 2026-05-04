@@ -5,6 +5,7 @@ class PodeCadastrarUsuario(BasePermission):
         if not request.user.is_authenticated:
             return False
 
+        # Superuser pode criar qualquer um (Admin/TI)
         if request.user.is_superuser:
             return True
 
@@ -12,17 +13,12 @@ class PodeCadastrarUsuario(BasePermission):
         if getattr(request.user, 'tipo', None) == 'GESTOR':
             tipo_solicitado = request.data.get('tipo')
             
-            # CORREÇÃO: Usa hasattr para evitar Erro 500 caso o usuário não tenha perfil
             if not hasattr(request.user, 'perfil_gestor'):
                 return False 
             
             departamento = request.user.perfil_gestor.departamento
-            
-            # Gestor de Logística pode criar outros Gestores
-            if departamento == 'LOGISTICA' and tipo_solicitado == 'GESTOR':
-                return True
                 
-            # Gestor de Vendas pode criar Representantes
+            # Gestor de Vendas SÓ pode criar Representantes
             if departamento == 'VENDAS' and tipo_solicitado == 'REPRESENTANTE':
                 return True
 

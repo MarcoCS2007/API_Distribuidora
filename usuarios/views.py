@@ -40,12 +40,18 @@ class UsuarioBaseViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         raise MethodNotAllowed('POST')
 
-    # Sobrescreve a exclusão padrão do banco de dados para realizar o "Soft-Delete"
+    # Soft-delete em cascata: desativa perfil (gestor ou representante) e a conta base
     def perform_destroy(self, instance):
-        # instance representa o usuário específico sendo "deletado" na requisição
-        instance.ativo = False # Oculta o usuário do sistema
-        instance.is_active = False # Bloqueia o token/login no fluxo nativo do Django
-        instance.save() # Salva o novo estado no banco
+        for Model in (PerfilGestor, PerfilRepresentante):
+            try:
+                perfil = Model.objects.get(usuario=instance)
+            except Model.DoesNotExist:
+                continue
+            perfil.ativo = False
+            perfil.save()
+        instance.ativo = False
+        instance.is_active = False
+        instance.save()
 
 # ViewSet responsável pelo CRUD exclusivo dos detalhes do Perfil Gestor
 class PerfilGestorViewSet(viewsets.ModelViewSet):
@@ -118,7 +124,7 @@ class PerfilRepresentanteViewSet(viewsets.ModelViewSet):
 
 # View isolada responsável pelo processo de Cadastro Unificado (Conta + Perfil)
 class CadastrarUsuarioView(APIView):
-    # Apenas cargos específicos podem cadastrar outros baseados na hierarquia (ex: Logística cria Gestor)
+    # Superuser: qualquer tipo; Gestor de Vendas: apenas REPRESENTANTE (ver PodeCadastrarUsuario)
     permission_classes = [PodeCadastrarUsuario]
 
     # Processa as requisições POST (criação de recursos)

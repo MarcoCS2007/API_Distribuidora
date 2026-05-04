@@ -20,7 +20,7 @@ Documentação de referência para **desenvolvedores backend**, **integração d
 O app `usuarios` concentra:
 
 - **Autenticação stateless** via JWT (emissão e renovação de tokens).
-- **Cadastro transacional** de conta + **exatamente um** perfil (`PerfilGestor` **ou** `PerfilRepresentante`), sem expor criação inconsistente pela API genérica de ViewSet.
+- **Cadastro transacional** de conta + **exatamente um** perfil (`PerfilGestor` **ou** `PerfilRepresentante`), apenas via **`POST /cadastro/`**, com política MVP: **superusuário** cria **gestores** (e pode criar representantes); **gestor de Vendas** cria **somente representantes**; **Logística não cadastra** usuários por esta rota.
 - **CRUD restrito** sobre `UsuarioBase`, `PerfilGestor` e `PerfilRepresentante`, com **filtros anti-IDOR** e **soft-delete** onde aplicável.
 
 ### 1.2 Camadas e fluxo de dados
@@ -66,14 +66,20 @@ Cliente (JSON)
 
 ### 2.1 Hierarquia de cadastro (`POST /api/usuarios/cadastro/`)
 
-A permissão **`PodeCadastrarUsuario`** (`permissions.py`) implementa a matriz abaixo. O **`tipo`** avaliado é o enviado no JSON (`request.data.get('tipo')`).
+A permissão **`PodeCadastrarUsuario`** (`permissions.py`) implementa a política atual do MVP. O **`tipo`** solicitado vem do corpo JSON (`request.data.get('tipo')`).
 
-| Autenticado como | Pode criar no cadastro |
-|------------------|-------------------------|
-| **`is_superuser`** | Qualquer `tipo` (`GESTOR` ou `REPRESENTANTE`) |
-| **Gestor** com `perfil_gestor.departamento == 'LOGISTICA'` | Somente **`tipo: "GESTOR"`** |
-| **Gestor** com `perfil_gestor.departamento == 'VENDAS'` | Somente **`tipo: "REPRESENTANTE"`** |
-| **Representante** ou gestor sem `perfil_gestor` resolvível | **Não** (`403 Forbidden`) |
+| Autenticado como | Pode usar `POST /cadastro/` |
+|------------------|------------------------------|
+| **`is_superuser`** (Administrador do Sistema) | **Único** autorizado a criar contas **`tipo: "GESTOR"`**. Pode também criar **`tipo: "REPRESENTANTE"`**. |
+| **Gestor** com `perfil_gestor.departamento == 'VENDAS'` | **Somente** **`tipo: "REPRESENTANTE"`**. Tentativa com **`tipo: "GESTOR"`** → **`403 Forbidden`**. |
+| **Gestor** com `perfil_gestor.departamento == 'LOGISTICA'` | **Nenhuma** criação permitida → **`403 Forbidden`**. |
+| **Representante** ou gestor sem `perfil_gestor` | **Negado** (`403 Forbidden`) |
+
+**Resumo operacional**
+
+- **`GESTOR`:** criação **exclusiva do superusuário** (não há delegação a gestores de Logística ou Vendas).
+- **`REPRESENTANTE`:** gestores de **Vendas** **ou** **superusuário**.
+- **Logística:** **não** cadastra usuários pela API.
 
 **Efeito no banco** (`services.criar_usuario_com_perfil`):
 
@@ -96,17 +102,17 @@ Toda a operação ocorre dentro de **`transaction.atomic()`** — falha no meio 
 
 ### 2.4 Exclusão lógica (soft-delete)
 
-Não há remoção física (`DELETE` SQL) nas rotas documentadas; o comportamento depende do recurso:
+Não há remoção física (`DELETE` SQL) nas rotas documentadas. Todas as exclusões são **lógicas**: campos **`ativo=False`** (modelos de negócio / `BaseModel`) e **`is_active=False`** (`UsuarioBase` / Django Auth), de forma que o login e tokens deixem de ser válidos para a política de autenticação configurada.
+
+**Cascata:** ao desativar um **perfil** (`PerfilGestor` ou `PerfilRepresentante`), o **`UsuarioBase`** vinculado é sempre desativado na mesma operação. Ao desativar pelo endpoint de **`UsuarioBase`**, o código desativa também o **perfil** associado (gestor ou representante), quando existir, antes de desativar a conta — mantendo **conta + perfil** alinhados.
 
 | Recurso alvo | Método | Efeito em `perform_destroy` |
-|--------------|--------|-----------------------------|
-| **`/usuarios/{id}/`** | `DELETE` | Apenas o **`UsuarioBase`**: `ativo=False`, `is_active=False`. **Não** atualiza automaticamente linhas de `PerfilGestor` / `PerfilRepresentante` no código atual. |
-| **`/gestores/{id}/`** | `DELETE` | **`PerfilGestor`**: `ativo=False`; em seguida **`UsuarioBase`** vinculado: `ativo=False`, `is_active=False`. |
-| **`/representantes/{id}/`** | `DELETE` | **`PerfilRepresentante`**: `ativo=False`; em seguida **`UsuarioBase`** vinculado: `ativo=False`, `is_active=False`. |
+|--------------|--------|-------------------------------|
+| **`/usuarios/{id}/`** | `DELETE` | Se existir **`perfil_gestor`** ou **`perfil_representante`**, define **`ativo=False`** no perfil; em seguida **`UsuarioBase`**: `ativo=False`, `is_active=False`. |
+| **`/gestores/{id}/`** | `DELETE` | **`PerfilGestor`**: `ativo=False`; depois **`UsuarioBase`** vinculado: `ativo=False`, `is_active=False`. |
+| **`/representantes/{id}/`** | `DELETE` | **`PerfilRepresentante`**: `ativo=False`; depois **`UsuarioBase`** vinculado: `ativo=False`, `is_active=False`. |
 
-**Implicação para integradores:** preferir exclusão pelo **perfil** quando o objetivo for desativar conta + perfil de forma consistente; ao usar `DELETE` em `usuarios/{id}/`, avaliar consistência dos perfis no banco conforme política do produto.
-
-**Resposta HTTP:** em sucesso, DRF costuma retornar **`204 No Content`** para `destroy`.
+**Resposta HTTP:** em sucesso, o DRF costuma retornar **`204 No Content`** para `destroy`.
 
 ---
 
@@ -135,9 +141,14 @@ Assim, um representante **não** consegue enumerar ou abrir detalhe de outros us
 | `POST` | **Não aplicável** aos ViewSets de coleção — retorno **`405`** (ver §2.2) |
 | `PUT`, `PATCH`, `DELETE` | **`is_superuser`** **ou** gestor com **`perfil_gestor.departamento == 'LOGISTICA'`** |
 
-**`PodeCadastrarUsuario`** (`CadastrarUsuarioView` apenas)
+**`PodeCadastrarUsuario`** (`CadastrarUsuarioView` — somente `POST /cadastro/`)
 
-- Exige JWT válido + regras da tabela §2.1.
+- Requer **JWT** válido.
+- **`is_superuser`:** permitido (criação de `GESTOR` e/ou `REPRESENTANTE` conforme o `tipo` no JSON).
+- **Gestor de Vendas:** somente se `tipo == 'REPRESENTANTE'`.
+- **Gestor de Logística, representantes e demais:** **negado** (`403`).
+
+Não confundir com **`IsLogisticaOrReadOnly`**: a Logística continua podendo **alterar / excluir** registros nos ViewSets (ver tabela abaixo), mas **não** cria contas via `cadastro/`.
 
 ### 3.3 Campos sensíveis e imutáveis nos serializers
 
@@ -226,7 +237,7 @@ Substitua `{id}` pelo PK inteiro do registro.
 | `201` | Cadastro em `/cadastro/` |
 | `400` | Validação do serializer (ex.: e-mail duplicado, senhas diferentes) |
 | `401` | Token ausente ou inválido |
-| `403` | Autenticado mas sem permissão (ex.: representante em `cadastro/`) |
+| `403` | Autenticado mas sem permissão (ex.: representante em `cadastro/`, gestor de Logística em `cadastro/`, gestor de Vendas com `tipo: "GESTOR"`) |
 | `405` | `POST` em coleções dos ViewSets acima |
 
 ---
@@ -319,9 +330,13 @@ Chamado por um **gestor de Vendas** (ou superusuário). Campos conforme **`Cadas
 }
 ```
 
-### 5.4 Cadastrar gestor (referência) — mesmo endpoint
+### 5.4 Cadastrar gestor — mesmo endpoint (**somente superusuário**)
 
-Requer chamador com permissão adequada (logística ou superusuário). Campos de perfil de gestor no serializer: `departamento` (`VENDAS` | `LOGISTICA`), `ramal_interno` (opcional; vazio vira `'0000'` no serviço).
+No MVP, **`tipo: "GESTOR"`** no `POST /cadastro/` é aceito **apenas** com autenticação de **`is_superuser`**. Gestores de Vendas ou de Logística recebem **`403 Forbidden`** se tentarem criar um gestor.
+
+Campos de perfil de gestor no serializer: `departamento` (`VENDAS` | `LOGISTICA`), `ramal_interno` (opcional; vazio vira `'0000'` no serviço; `departamento` omitido defaulta a `VENDAS` no serviço).
+
+**Request**
 
 ```json
 {
@@ -332,6 +347,15 @@ Requer chamador com permissão adequada (logística ou superusuário). Campos de
   "password_confirm": "SenhaForte789!",
   "departamento": "LOGISTICA",
   "ramal_interno": "2104"
+}
+```
+
+**Response `201 Created`** (igual à view de cadastro)
+
+```json
+{
+  "mensagem": "Usuário criado!",
+  "email": "novo.gestor.logistica@empresa.com.br"
 }
 ```
 
