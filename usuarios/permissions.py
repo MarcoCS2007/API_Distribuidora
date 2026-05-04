@@ -1,4 +1,4 @@
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import BasePermission, SAFE_METHODS
 
 class PodeCadastrarUsuario(BasePermission):
     def has_permission(self, request, view):
@@ -12,11 +12,11 @@ class PodeCadastrarUsuario(BasePermission):
         if getattr(request.user, 'tipo', None) == 'GESTOR':
             tipo_solicitado = request.data.get('tipo')
             
-            try:
-                # O Django cria essa ligação (perfilgestor)
-                departamento = request.user.perfil_gestor.departamento
-            except AttributeError:
-                return False # Bloqueia se houver falha de integridade no banco
+            # CORREÇÃO: Usa hasattr para evitar Erro 500 caso o usuário não tenha perfil
+            if not hasattr(request.user, 'perfil_gestor'):
+                return False 
+            
+            departamento = request.user.perfil_gestor.departamento
             
             # Gestor de Logística pode criar outros Gestores
             if departamento == 'LOGISTICA' and tipo_solicitado == 'GESTOR':
@@ -28,7 +28,6 @@ class PodeCadastrarUsuario(BasePermission):
 
         return False
 
-from rest_framework.permissions import BasePermission, SAFE_METHODS
 
 class IsLogisticaOrReadOnly(BasePermission):
     """
@@ -50,10 +49,10 @@ class IsLogisticaOrReadOnly(BasePermission):
 
         # 4. Checa se é Gestor de Logística
         if getattr(request.user, 'tipo', None) == 'GESTOR':
-            try:
+            # CORREÇÃO: Usa hasattr para validação segura
+            if hasattr(request.user, 'perfil_gestor'):
                 return request.user.perfil_gestor.departamento == 'LOGISTICA'
-            except AttributeError:
-                return False
+            return False
 
         # Se chegou aqui (ex: é Representante tentando dar DELETE), bloqueia
         return False

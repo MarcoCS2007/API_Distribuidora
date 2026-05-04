@@ -1,158 +1,250 @@
-# App `usuarios` — Documentação Técnica
+# Módulo `usuarios` — Referência técnica
 
-Documentação do módulo de **autenticação B2B** e **gestão de perfis** (gestores e representantes) integrado ao Django REST Framework (DRF) e **SimpleJWT**.
+Documentação de referência para **desenvolvedores backend**, **integração de APIs** e **frontends** que consomem o domínio de identidade, autenticação e perfis hierárquicos da distribuidora.
 
-**Prefixo base das rotas:** conforme `setup/urls.py`, o include aponta para `path('api/usuarios/', include('usuarios.urls'))`. Todas as URLs abaixo assumem o prefixo `/api/usuarios/`.
+**Contratos globais**
 
----
-
-## 1. Visão Geral
-
-O app `usuarios` centraliza:
-
-- **Autenticação:** emissão e renovação de tokens JWT (`login/` e `login/refresh/`), alinhado ao modelo de usuário customizado com login por **e-mail**.
-- **Cadastro controlado:** endpoint `POST cadastro/` para criação de novos usuários com perfil associado, sujeito a **autenticação** e a regras de **hierarquia** (`PodeCadastrarUsuario`).
-- **Gestão de dados:** ViewSets com CRUD sobre `UsuarioBase`, `PerfilGestor` e `PerfilRepresentante`, protegidos por **`IsLogisticaOrReadOnly`** (leitura para qualquer autenticado; escrita apenas para perfis privilegiados — ver §5.1).
-
-O fluxo típico B2B: obter JWT → (conforme papel) cadastrar ou consultar usuários e perfis via API.
+| Item | Valor |
+|------|--------|
+| **Prefixo HTTP** | `/api/usuarios/` (definido em `setup/urls.py` → `usuarios.urls`) |
+| **Framework** | Django REST Framework (DRF) + **Simple JWT** para tokens |
+| **Modelo de usuário** | `AUTH_USER_MODEL = 'usuarios.UsuarioBase'` |
+| **Formato de corpo** | `application/json` (salvo indicação contrária) |
 
 ---
 
-## 2. Arquitetura
+## 1. Visão geral e arquitetura
 
-### Service Layer (`services.py`)
+### 1.1 Papel do módulo
 
-A criação de usuário não é feita diretamente na view após a validação do serializer. A função `criar_usuario_com_perfil(validated_data)` concentra a persistência e garante **atomicidade** com `transaction.atomic()`:
+O app `usuarios` concentra:
 
-- Cria o registro em `UsuarioBase` (senha já tratada por `create_user`).
-- Em seguida cria **exatamente um** perfil condicionado ao `tipo`: `PerfilGestor` se `tipo == 'GESTOR'`, ou `PerfilRepresentante` se `tipo == 'REPRESENTANTE'`.
+- **Autenticação stateless** via JWT (emissão e renovação de tokens).
+- **Cadastro transacional** de conta + **exatamente um** perfil (`PerfilGestor` **ou** `PerfilRepresentante`), sem expor criação inconsistente pela API genérica de ViewSet.
+- **CRUD restrito** sobre `UsuarioBase`, `PerfilGestor` e `PerfilRepresentante`, com **filtros anti-IDOR** e **soft-delete** onde aplicável.
 
-Assim, a view permanece fina (validar → chamar serviço → responder), e falhas no meio do processo não deixam usuário “órfão” sem perfil correspondente, dentro da mesma transação.
+### 1.2 Camadas e fluxo de dados
 
----
+```
+Cliente (JSON)
+    → View / ViewSet (DRF)
+        → Serializer (validação de entrada)
+        → [Cadastro] services.criar_usuario_com_perfil + transaction.atomic()
+        → Modelos Django → PostgreSQL/SQLite (conforme settings)
+```
 
-## 3. Modelagem de Dados
+| Camada | Arquivo(s) | Responsabilidade |
+|--------|------------|------------------|
+| **Rotas** | `usuarios/urls.py` | `DefaultRouter` (recursos REST) + rotas JWT + `cadastro/` |
+| **Views** | `usuarios/views.py` | ViewSets + `CadastrarUsuarioView` (`APIView`) |
+| **Serviço** | `usuarios/services.py` | `criar_usuario_com_perfil`: persistência atômica usuário + perfil |
+| **Serialização** | `usuarios/serializers.py` | Validação, exposição de campos, regras de escrita |
+| **Autorização** | `usuarios/permissions.py` | `PodeCadastrarUsuario`, `IsLogisticaOrReadOnly` |
+| **Modelagem** | `usuarios/models.py` | `UsuarioBase`, `PerfilGestor`, `PerfilRepresentante` |
 
-### `UsuarioBase` (`models.py`)
+### 1.3 Modelos (resumo de schema)
 
-- Herda de `AbstractUser` do Django.
-- **`USERNAME_FIELD = 'email'`** — o identificador de login é o e-mail (`email` único).
-- **`REQUIRED_FIELDS`** inclui `username` e `tipo` (campos exigidos além do `USERNAME_FIELD` em fluxos como `createsuperuser`).
-- Campo **`tipo`**: escolha entre `GESTOR` e `REPRESENTANTE`, definindo qual perfil One-to-One será criado pelo serviço de cadastro.
+**`UsuarioBase`** (`AbstractUser`)
 
-### Perfis (One-to-One com `UsuarioBase`)
+- Identificador de login: **`email`** (`USERNAME_FIELD`); campo `username` ainda existe (preenchido pelo serviço de cadastro a partir da parte local do e-mail).
+- **`tipo`**: `GESTOR` | `REPRESENTANTE`.
+- **`ativo`**: flag de negócio (listagens e regras de visibilidade); complementar a `is_active` do Django Auth.
 
-| Modelo | Relacionamento | Campos relevantes |
-|--------|----------------|-------------------|
-| **`PerfilGestor`** | `usuario` → `OneToOneField(UsuarioBase)`, `related_name='perfil_gestor'` | `departamento` (`VENDAS` \| `LOGISTICA`), `ramal_interno` |
-| **`PerfilRepresentante`** | `usuario` → `OneToOneField(UsuarioBase)`, `related_name='perfil_representante'` | `telefone_contato`, `regiao_atuacao`, `limite_desconto_maximo`, `meta_mensal`, `percentual_comissao` |
+**`PerfilGestor`** (`core.models.BaseModel` + `OneToOne` → `UsuarioBase`)
 
-Ambos os perfis herdam de **`core.models.BaseModel`**: `criado_em`, `atualizado_em`, `ativo`.
+- `departamento`: `VENDAS` | `LOGISTICA`
+- `ramal_interno`: `CharField(max_length=20)`
+- Metadados herdados: `criado_em`, `atualizado_em`, `ativo`
 
----
+**`PerfilRepresentante`** (`BaseModel` + `OneToOne` → `UsuarioBase`)
 
-## 4. Endpoints da API
-
-Todas as rotas abaixo são relativas ao prefixo **`/api/usuarios/`**.
-
-### JWT (SimpleJWT)
-
-| Método | Rota (`urls.py`) | Descrição |
-|--------|------------------|-----------|
-| `POST` | `login/` | Obtém par de tokens (access + refresh). Corpo usa o campo definido pelo `USERNAME_FIELD` do usuário (`email`) e `password`. |
-| `POST` | `login/refresh/` | Renova o access token a partir do `refresh`. |
-
-### Cadastro
-
-| Método | Rota | Descrição |
-|--------|------|-----------|
-| `POST` | `cadastro/` | Cria usuário + perfil; exige JWT e permissão `PodeCadastrarUsuario`. |
-
-### CRUD — `DefaultRouter`
-
-| Recurso registrado | Listagem / criação | Detalhe (retrieve, update, partial_update, destroy) |
-|--------------------|--------------------|------------------------------------------------------|
-| `usuarios/` | `GET`, `POST` | `GET`, `PUT`, `PATCH`, `DELETE` em `usuarios/{id}/` |
-| `gestores/` | `GET`, `POST` | `GET`, `PUT`, `PATCH`, `DELETE` em `gestores/{id}/` |
-| `representantes/` | `GET`, `POST` | `GET`, `PUT`, `PATCH`, `DELETE` em `representantes/{id}/` |
-
-**Serializers:** `UsuarioBaseSerializer` expõe `id`, `username`, `email`, `tipo`. `PerfilGestorSerializer` e `PerfilRepresentanteSerializer` usam `fields = '__all__'` (incluem chaves estrangeiras e timestamps herdados de `BaseModel`).
+- `telefone_contato`, `regiao_atuacao`, `limite_desconto_maximo`, `meta_mensal`, `percentual_comissao` (defaults no modelo; o serviço aplica fallbacks quando o payload omite valores).
 
 ---
 
-## 5. Regras de Negócio e Segurança
+## 2. Regras de negócio
 
-### 5.1 Listagens e CRUD de perfis / usuários — Princípio do Menor Privilégio (PoLP)
+### 2.1 Hierarquia de cadastro (`POST /api/usuarios/cadastro/`)
 
-Os três ViewSets — **`UsuarioBaseViewSet`**, **`PerfilGestorViewSet`** e **`PerfilRepresentanteViewSet`** — não usam mais apenas `IsAuthenticated`. Em **`views.py`**, `permission_classes` foi definido como **`[IsLogisticaOrReadOnly]`** (`permissions.py`), alinhando a API ao **Princípio do Menor Privilégio (PoLP)**: cada papel recebe o mínimo de permissões necessárias para o trabalho; escrita fica concentrada em quem opera dados mestres (administração e logística).
+A permissão **`PodeCadastrarUsuario`** (`permissions.py`) implementa a matriz abaixo. O **`tipo`** avaliado é o enviado no JSON (`request.data.get('tipo')`).
 
-Comportamento de **`IsLogisticaOrReadOnly`**:
+| Autenticado como | Pode criar no cadastro |
+|------------------|-------------------------|
+| **`is_superuser`** | Qualquer `tipo` (`GESTOR` ou `REPRESENTANTE`) |
+| **Gestor** com `perfil_gestor.departamento == 'LOGISTICA'` | Somente **`tipo: "GESTOR"`** |
+| **Gestor** com `perfil_gestor.departamento == 'VENDAS'` | Somente **`tipo: "REPRESENTANTE"`** |
+| **Representante** ou gestor sem `perfil_gestor` resolvível | **Não** (`403 Forbidden`) |
 
-1. **Autenticação:** requisições não autenticadas são negadas (`401 Unauthorized`, conforme configuração do DRF/JWT).
+**Efeito no banco** (`services.criar_usuario_com_perfil`):
 
-2. **Leitura (`GET`, `HEAD`, `OPTIONS` — `SAFE_METHODS` do DRF):** **qualquer usuário autenticado** pode consultar listagens e detalhes (gestores e representantes compartilham a visão tipo “lista telefônica” interna de usuários e perfis).
+- `tipo == 'GESTOR'` → cria `UsuarioBase` + **`PerfilGestor`** (`departamento` default `VENDAS` se omitido; `ramal_interno` default `'0000'` se vazio).
+- `tipo == 'REPRESENTANTE'` → cria `UsuarioBase` + **`PerfilRepresentante`** (strings vazias e decimais default conforme serviço).
 
-3. **Escrita e modificação (`POST`, `PUT`, `PATCH`, `DELETE`):** permitidas **somente** para:
-   - **Administradores** (`request.user.is_superuser`), ou
-   - **Gestores** (`tipo == 'GESTOR'`) cujo **`perfil_gestor.departamento == 'LOGISTICA'`**.
+Toda a operação ocorre dentro de **`transaction.atomic()`** — falha no meio não deixa usuário sem perfil correspondente.
 
-   **Representantes** e **Gestores de Vendas** que tentarem criar, alterar ou excluir registros por esses ViewSets recebem **`403 Forbidden`**. Gestores sem `perfil_gestor` resolvível (ex.: `AttributeError`) também falham na checagem de escrita e são bloqueados.
+### 2.2 Bloqueio arquitetural: criação apenas via `/cadastro/`
 
-Em resumo: leitura ampla entre autenticados; mutação restrita a superusuário e gestão logística — reduzindo superfície de abuso sem impedir a consulta colaborativa.
+- **Única rota suportada** para **criar** novos usuários/perfis no MVP: **`POST /api/usuarios/cadastro/`**.
+- Os ViewSets `UsuarioBaseViewSet`, `PerfilGestorViewSet` e `PerfilRepresentanteViewSet` **sobrescrevem `create`** e respondem **`405 Method Not Allowed`** para **`POST`** nas coleções (`/usuarios/`, `/gestores/`, `/representantes/`).
+- Motivação: o serializer de usuário base (`UsuarioBaseSerializer`) não cria perfil vinculado; apenas `cadastro/` + serviço garantem **usuário + perfil** coerentes.
 
-### 5.2 Cadastro (`POST cadastro/`)
+### 2.3 Visibilidade de dados (queryset)
 
-- **Autenticação JWT:** `PodeCadastrarUsuario` nega acesso a não autenticados; envie o token no header (`Authorization: Bearer <access>`).
-- **`PodeCadastrarUsuario`** (`permissions.py`) aplica a hierarquia:
+- **Listagens e retrieve** usam querysets filtrados por **`ativo=True`** nos três recursos.
+- **Representantes** enxergam **apenas** o próprio usuário / perfil (ver §3.1 — IDOR).
+- **Gestores** e **superusuários** enxergam o conjunto completo (ainda restrito a `ativo=True` na camada de queryset base).
 
-| Quem | Pode cadastrar |
-|------|----------------|
-| **Superusuário** (`is_superuser`) | Qualquer perfil (`tipo` no payload sem restrição adicional nesta permissão). |
-| **Gestor** com `perfil_gestor.departamento == 'LOGISTICA'` | Apenas novos usuários com **`tipo == 'GESTOR'`** no corpo da requisição. |
-| **Gestor** com `perfil_gestor.departamento == 'VENDAS'` | Apenas novos usuários com **`tipo == 'REPRESENTANTE'`**. |
-| **Gestor** sem `perfil_gestor` acessível (ex.: `AttributeError`) | **Negado** (falha de integridade / dados inconsistentes tratada como bloqueio). |
-| **Representante** (`tipo == 'REPRESENTANTE'`) ou demais casos | **Não** podem cadastrar (`False`). |
+### 2.4 Exclusão lógica (soft-delete)
 
-O `tipo` avaliado na permissão vem de **`request.data.get('tipo')`** — deve estar presente e coerente com as regras acima.
+Não há remoção física (`DELETE` SQL) nas rotas documentadas; o comportamento depende do recurso:
 
-### 5.3 Serializer de cadastro e integridade via serviço
+| Recurso alvo | Método | Efeito em `perform_destroy` |
+|--------------|--------|-----------------------------|
+| **`/usuarios/{id}/`** | `DELETE` | Apenas o **`UsuarioBase`**: `ativo=False`, `is_active=False`. **Não** atualiza automaticamente linhas de `PerfilGestor` / `PerfilRepresentante` no código atual. |
+| **`/gestores/{id}/`** | `DELETE` | **`PerfilGestor`**: `ativo=False`; em seguida **`UsuarioBase`** vinculado: `ativo=False`, `is_active=False`. |
+| **`/representantes/{id}/`** | `DELETE` | **`PerfilRepresentante`**: `ativo=False`; em seguida **`UsuarioBase`** vinculado: `ativo=False`, `is_active=False`. |
 
-- **`CadastroUsuarioSerializer`** trata como **obrigatórios:** `email`, `nome`, `tipo`, `password`, `password_confirm`.
-- Campos de perfil são **opcionais** (`required=False` e, onde aplicável, `allow_blank=True`): `departamento`, `ramal_interno`, `telefone_contato`, `regiao_atuacao`, `limite_desconto_maximo`, `meta_mensal`, `percentual_comissao`.
-- Validações no serializer: confirmação de senha; e-mail único no sistema.
+**Implicação para integradores:** preferir exclusão pelo **perfil** quando o objetivo for desativar conta + perfil de forma consistente; ao usar `DELETE` em `usuarios/{id}/`, avaliar consistência dos perfis no banco conforme política do produto.
 
-O **`criar_usuario_com_perfil`** aplica **fallbacks** para que o banco receba valores válidos mesmo com payload mínimo:
-
-| Campo / contexto | Comportamento quando omitido ou vazio |
-|------------------|----------------------------------------|
-| `departamento` | `'VENDAS'` |
-| `ramal_interno` | `None` ou string vazia → `'0000'` |
-| `telefone_contato` | `None` → `''` |
-| `regiao_atuacao` | `None` → `''` |
-| `limite_desconto_maximo` | `None` → `0.00` |
-| `meta_mensal` | `None` → `0.00` |
-| `percentual_comissao` | `None` → `1.00` |
-
-O **`username`** do Django é preenchido automaticamente com a parte local do e-mail (`email.split('@')[0]`). O **`first_name`** recebe o `nome` enviado no cadastro.
+**Resposta HTTP:** em sucesso, DRF costuma retornar **`204 No Content`** para `destroy`.
 
 ---
 
-## 6. Exemplos de payload (JSON)
+## 3. Segurança e permissões
 
-### 6.1 Login JWT (`POST /api/usuarios/login/`)
+### 3.1 Proteção contra IDOR (`get_queryset`)
 
-O modelo de usuário usa `USERNAME_FIELD = 'email'`; o corpo do SimpleJWT segue esse campo como chave principal de identificação.
+Em **`UsuarioBaseViewSet`**, **`PerfilGestorViewSet`** e **`PerfilRepresentanteViewSet`**:
 
-**Request:**
+- Requisições **não autenticadas** recebem queryset vazio (evita vazamento antes da camada de permissão em alguns fluxos).
+- **`tipo == 'REPRESENTANTE'`**:
+  - `usuarios/` → somente `id == request.user.id`
+  - `gestores/` e `representantes/` → somente registros com `usuario=request.user`
+- **`tipo == 'GESTOR'`** ou **`is_superuser`**: acesso ao queryset completo (filtrado por `ativo=True`).
+- Demais casos: queryset vazio.
+
+Assim, um representante **não** consegue enumerar ou abrir detalhe de outros usuários/perfis por troca de `id` na URL (salvo bug de permissão em outra camada).
+
+### 3.2 Permissões DRF
+
+**`IsLogisticaOrReadOnly`** (ViewSets de `usuarios`, `gestores`, `representantes`)
+
+| Método | Quem passa |
+|--------|------------|
+| `GET`, `HEAD`, `OPTIONS` | Qualquer usuário **autenticado** |
+| `POST` | **Não aplicável** aos ViewSets de coleção — retorno **`405`** (ver §2.2) |
+| `PUT`, `PATCH`, `DELETE` | **`is_superuser`** **ou** gestor com **`perfil_gestor.departamento == 'LOGISTICA'`** |
+
+**`PodeCadastrarUsuario`** (`CadastrarUsuarioView` apenas)
+
+- Exige JWT válido + regras da tabela §2.1.
+
+### 3.3 Campos sensíveis e imutáveis nos serializers
+
+**`UsuarioBaseSerializer`**
+
+| Campo | Comportamento |
+|-------|----------------|
+| `password` | **Write-only** — nunca serializado em respostas de leitura; em `update`, se enviado, dispara `set_password`. |
+| `tipo` | **Read-only** — não pode ser alterado via este serializer (alinhado ao fluxo de cadastro controlado). |
+
+**`PerfilGestorSerializer` / `PerfilRepresentanteSerializer`**
+
+- `usuario`: **read-only** — vínculo não deve ser trocado pela API de perfil.
+
+**`CadastroUsuarioSerializer`**
+
+- `password` e `password_confirm`: campos de entrada; **não** entram no payload de sucesso `201` (apenas `mensagem` + `email`).
+
+### 3.4 Cabeçalho de autenticação (JWT)
+
+Para rotas protegidas (cadastro, ViewSets, refresh com política padrão):
+
+```http
+Authorization: Bearer <access_token>
+```
+
+---
+
+## 4. Endpoints (rotas)
+
+Todas as URLs abaixo são relativas ao host da API (ex.: `https://api.exemplo.com`).
+
+### 4.1 JWT (SimpleJWT)
+
+| Método | Caminho completo | View | Descrição |
+|--------|------------------|------|-----------|
+| `POST` | `/api/usuarios/login/` | `TokenObtainPairView` | Obtém `access` + `refresh`. Corpo: credenciais alinhadas ao `USERNAME_FIELD` (**`email`**) e **`password`**. |
+| `POST` | `/api/usuarios/login/refresh/` | `TokenRefreshView` | Novo `access` a partir de **`refresh`**. |
+
+### 4.2 Cadastro transacional
+
+| Método | Caminho completo | View | Permissão |
+|--------|------------------|------|-----------|
+| `POST` | `/api/usuarios/cadastro/` | `CadastrarUsuarioView` | `PodeCadastrarUsuario` |
+
+### 4.3 Router (`DefaultRouter`)
+
+Substitua `{id}` pelo PK inteiro do registro.
+
+#### `UsuarioBase`
+
+| Método | Caminho | Ação |
+|--------|---------|------|
+| `GET` | `/api/usuarios/usuarios/` | Lista (filtrada por papel — §3.1) |
+| `POST` | `/api/usuarios/usuarios/` | **`405`** — usar `cadastro/` |
+| `GET` | `/api/usuarios/usuarios/{id}/` | Detalhe |
+| `PUT` | `/api/usuarios/usuarios/{id}/` | Substituição completa (permissão logística — §3.2) |
+| `PATCH` | `/api/usuarios/usuarios/{id}/` | Atualização parcial |
+| `DELETE` | `/api/usuarios/usuarios/{id}/` | Soft-delete do usuário (§2.4) |
+
+#### `PerfilGestor`
+
+| Método | Caminho | Ação |
+|--------|---------|------|
+| `GET` | `/api/usuarios/gestores/` | Lista |
+| `POST` | `/api/usuarios/gestores/` | **`405`** |
+| `GET` | `/api/usuarios/gestores/{id}/` | Detalhe |
+| `PUT` / `PATCH` | `/api/usuarios/gestores/{id}/` | Atualização |
+| `DELETE` | `/api/usuarios/gestores/{id}/` | Soft-delete perfil + usuário (§2.4) |
+
+#### `PerfilRepresentante`
+
+| Método | Caminho | Ação |
+|--------|---------|------|
+| `GET` | `/api/usuarios/representantes/` | Lista |
+| `POST` | `/api/usuarios/representantes/` | **`405`** |
+| `GET` | `/api/usuarios/representantes/{id}/` | Detalhe |
+| `PUT` / `PATCH` | `/api/usuarios/representantes/{id}/` | Atualização |
+| `DELETE` | `/api/usuarios/representantes/{id}/` | Soft-delete perfil + usuário (§2.4) |
+
+### 4.4 Códigos HTTP frequentes
+
+| Código | Contexto típico |
+|--------|-------------------|
+| `200` / `204` | Leitura / exclusão bem-sucedida |
+| `201` | Cadastro em `/cadastro/` |
+| `400` | Validação do serializer (ex.: e-mail duplicado, senhas diferentes) |
+| `401` | Token ausente ou inválido |
+| `403` | Autenticado mas sem permissão (ex.: representante em `cadastro/`) |
+| `405` | `POST` em coleções dos ViewSets acima |
+
+---
+
+## 5. Exemplos de uso (JSON)
+
+### 5.1 Login — `POST /api/usuarios/login/`
+
+**Request**
 
 ```json
 {
-  "email": "gestor.logistica@empresa.com.br",
-  "password": "senha-segura-aqui"
+  "email": "gestor.vendas@empresa.com.br",
+  "password": "SenhaSegura123!"
 }
 ```
 
-**Response (exemplo ilustrativo — estrutura típica do SimpleJWT):**
+**Response `200 OK`** (estrutura típica SimpleJWT; nomes exatos podem variar conforme `SIMPLE_JWT` em `settings`)
 
 ```json
 {
@@ -161,7 +253,9 @@ O modelo de usuário usa `USERNAME_FIELD = 'email'`; o corpo do SimpleJWT segue 
 }
 ```
 
-Renovação (`POST /api/usuarios/login/refresh/`):
+### 5.2 Renovar access — `POST /api/usuarios/login/refresh/`
+
+**Request**
 
 ```json
 {
@@ -169,78 +263,114 @@ Renovação (`POST /api/usuarios/login/refresh/`):
 }
 ```
 
-### 6.2 Cadastro (`POST /api/usuarios/cadastro/`)
-
-Header: `Authorization: Bearer <access_token>`.
-
-**Request — Gestor (campos de perfil parciais; fallbacks no serviço):**
+**Response `200 OK`**
 
 ```json
 {
-  "email": "novo.gestor@empresa.com.br",
-  "nome": "Novo Gestor",
-  "tipo": "GESTOR",
-  "password": "SenhaForte123!",
-  "password_confirm": "SenhaForte123!",
-  "departamento": "LOGISTICA",
-  "ramal_interno": "1234"
+  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 }
 ```
 
-**Request — Representante (muitos campos opcionais):**
+### 5.3 Cadastrar representante — `POST /api/usuarios/cadastro/`
+
+Chamado por um **gestor de Vendas** (ou superusuário). Campos conforme **`CadastroUsuarioSerializer`** (`serializers.py`).
+
+**Request** (campos obrigatórios: `email`, `nome`, `tipo`, `password`, `password_confirm`; demais opcionais)
 
 ```json
 {
-  "email": "rep.sul@empresa.com.br",
-  "nome": "Representante Sul",
+  "email": "representante.sul@empresa.com.br",
+  "nome": "Maria Representante",
   "tipo": "REPRESENTANTE",
-  "password": "OutraSenha456!",
-  "password_confirm": "OutraSenha456!",
-  "telefone_contato": "(11) 99999-0000",
-  "regiao_atuacao": "Sul / PR-SC-RS"
+  "password": "OutraSenhaForte456!",
+  "password_confirm": "OutraSenhaForte456!",
+  "telefone_contato": "(41) 99999-0000",
+  "regiao_atuacao": "Paraná / Santa Catarina",
+  "limite_desconto_maximo": "5.00",
+  "meta_mensal": "50000.00",
+  "percentual_comissao": "2.50"
 }
 ```
 
-**Response sucesso (`201 Created`):**
+**Response `201 Created`** (corpo fixo da view)
 
 ```json
 {
   "mensagem": "Usuário criado!",
-  "email": "novo.gestor@empresa.com.br"
+  "email": "representante.sul@empresa.com.br"
 }
 ```
 
-**Response erro de validação (`400 Bad Request`) — exemplo:**
+**Response `400 Bad Request`** — exemplo (validação de unicidade de e-mail)
 
 ```json
 {
-  "email": ["Este e-mail já está cadastrado em nosso sistema."]
+  "email": [
+    "Este e-mail já está cadastrado em nosso sistema."
+  ]
 }
 ```
 
-ou
+**Response `400 Bad Request`** — exemplo (senhas divergentes)
 
 ```json
 {
-  "password": ["As senhas informadas não conferem."]
+  "password": "As senhas informadas não conferem."
 }
 ```
 
-Em caso de **403 Forbidden**, o usuário autenticado não satisfaz `PodeCadastrarUsuario` (por exemplo, representante tentando cadastrar ou gestor de vendas tentando criar um `GESTOR`).
+### 5.4 Cadastrar gestor (referência) — mesmo endpoint
+
+Requer chamador com permissão adequada (logística ou superusuário). Campos de perfil de gestor no serializer: `departamento` (`VENDAS` | `LOGISTICA`), `ramal_interno` (opcional; vazio vira `'0000'` no serviço).
+
+```json
+{
+  "email": "novo.gestor.logistica@empresa.com.br",
+  "nome": "Gestor Logística",
+  "tipo": "GESTOR",
+  "password": "SenhaForte789!",
+  "password_confirm": "SenhaForte789!",
+  "departamento": "LOGISTICA",
+  "ramal_interno": "2104"
+}
+```
+
+### 5.5 Leitura de usuário — `GET /api/usuarios/usuarios/{id}/`
+
+**Response `200 OK`** (exemplo; **`password`** nunca aparece)
+
+```json
+{
+  "id": 42,
+  "username": "representante.sul",
+  "email": "representante.sul@empresa.com.br",
+  "tipo": "REPRESENTANTE"
+}
+```
+
+### 5.6 Atualização parcial com troca de senha — `PATCH /api/usuarios/usuarios/{id}/`
+
+**Request** (apenas campos desejados; exige permissão logística ou superusuário)
+
+```json
+{
+  "email": "representante.sul.novo@empresa.com.br",
+  "password": "NovaSenhaSegura2026!"
+}
+```
+
+**Response `200 OK`:** objeto usuário atualizado (sem `password`).
 
 ---
 
-## 7. Referência rápida de arquivos
+## Apêndice: arquivos relacionados
 
-| Arquivo | Responsabilidade |
-|---------|------------------|
-| `models.py` | `UsuarioBase`, `PerfilGestor`, `PerfilRepresentante` |
-| `serializers.py` | Serializers de exposição CRUD + `CadastroUsuarioSerializer` |
-| `services.py` | `criar_usuario_com_perfil` — transação e defaults |
-| `views.py` | ViewSets autenticados + `CadastrarUsuarioView` |
-| `permissions.py` | `PodeCadastrarUsuario`, `IsLogisticaOrReadOnly` — cadastro hierárquico e PoLP nos ViewSets |
-| `urls.py` | Router DRF + JWT + cadastro |
-
----
-
-*Configuração global relacionada:* `AUTH_USER_MODEL = 'usuarios.UsuarioBase'` e autenticação JWT padrão do DRF em `setup/settings.py`.
+| Arquivo | Conteúdo principal |
+|---------|---------------------|
+| `usuarios/models.py` | Entidades de domínio |
+| `usuarios/serializers.py` | Contratos JSON |
+| `usuarios/services.py` | `criar_usuario_com_perfil` |
+| `usuarios/views.py` | HTTP + soft-delete + bloqueio `POST` |
+| `usuarios/permissions.py` | Políticas DRF |
+| `usuarios/urls.py` | Rotas |
+| `setup/settings.py` | `AUTH_USER_MODEL`, `REST_FRAMEWORK`, `SIMPLE_JWT` |
