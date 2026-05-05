@@ -1,116 +1,89 @@
-# 🤖 ERP B2B com IA Integrada (Text-to-SQL RAG)
+# ⚠️ DEMONSTRAÇÃO: ERP B2B com IA Integrada (Text-to-SQL RAG)
 
-Um sistema de back-end robusto para gestão de vendas B2B, potencializado por um Assistente Virtual de Inteligência Artificial. O sistema permite que representantes comerciais consultem dados de catálogo, estoque e histórico de vendas utilizando linguagem natural, com isolamento rigoroso de dados (Multi-Tenant) e segurança baseada em JWT.
+> 🚨 **AVISO IMPORTANTE:** Esta branch (`demo-AI`) foi criada EXCLUSIVAMENTE para fins de portfólio, apresentação e testes locais. Ela contém atalhos de desenvolvimento (como a geração e injeção automática de tokens JWT de administrador no Front-end) para melhorar a Developer Experience (DX) durante demonstrações. **Este código não deve ser levado para um ambiente de produção.** Para a versão oficial e segura do back-end, acesse a branch `main`.
 
-## 🎯 Sobre o Projeto
+Um sistema de back-end robusto para gestão de vendas B2B, potencializado por um Assistente Virtual de Inteligência Artificial. Esta versão inclui uma interface visual acoplada para facilitar a interação com a IA utilizando linguagem natural.
 
-O diferencial deste projeto é a integração profunda de um pipeline **RAG (Retrieval-Augmented Generation)** em 2 passos diretamente com o banco de dados da aplicação, garantindo que a IA gere relatórios dinâmicos sem comprometer a segurança da informação.
+## 🎯 Sobre a Demonstração
 
-### Principais Funcionalidades
-- **Text-to-SQL + Data-to-Text:** A IA (Gemini 2.5 Flash) traduz a pergunta do usuário para uma query SQL otimizada, o backend executa no banco e devolve os dados para a IA formular uma resposta humana e orgânica.
-- **Isolamento de Dados (Row-Level Security Dinâmico):** A inteligência artificial é instruída através do *System Prompt* a filtrar automaticamente as consultas de vendas pelo `ID` do representante logado via token JWT. Um representante jamais tem acesso aos dados de outro.
-- **Resiliência (Auto-Retry):** Sistema de tratamento de exceções onde o backend captura eventuais erros de sintaxe SQL gerados pela IA e exige uma auto-correção iterativa (com limite de tentativas) antes de falhar a requisição.
-- **Ambiente de Demonstração (DX):** Interface gráfica acoplada na branch `demo-AI` para testes rápidos sem necessidade de ferramentas externas como Postman.
+O objetivo desta branch é provar o funcionamento do nosso pipeline **RAG (Retrieval-Augmented Generation)** em 2 passos diretamente no navegador, sem a necessidade de ferramentas externas como Postman ou Insomnia.
+
+### O que tem de diferente nesta branch?
+- **Interface Gráfica (UI):** Uma tela HTML/JS Vanilla renderizada pelo próprio Django para interação em formato de chat.
+- **Injeção de Token (Plug & Play):** Ao acessar a tela de demonstração, o backend gera automaticamente um Token JWT de acesso (simulando o usuário Admin) para que recrutadores ou avaliadores possam testar a IA instantaneamente, com zero atrito.
+- **Isolamento de Dados Mantido:** Mesmo na demo, a Inteligência Artificial obedece à regra de *Row-Level Security*, injetando o ID do usuário nos prompts SQL para evitar vazamento de dados.
 
 ## 🛠️ Tecnologias e Stack
 
-- **Linguagem:** Python 3
-- **Framework Back-end:** Django & Django REST Framework (DRF)
-- **Banco de Dados:** SQLite (Desenvolvimento)
+- **Back-end:** Python 3, Django & Django REST Framework (DRF)
 - **Inteligência Artificial:** Google Gemini 2.5 Flash (`google-generativeai`)
-- **Autenticação:** JSON Web Tokens (JWT) via `rest_framework_simplejwt`
-- **Variáveis de Ambiente:** `python-dotenv`
+- **Autenticação:** JSON Web Tokens (JWT)
+- **Front-end (Demo):** HTML5, CSS3, Vanilla JavaScript
+- **Banco de Dados:** SQLite
 
-## 📦 Arquitetura de Módulos (Apps)
+## 📂 Arquitetura do App de Inteligência Artificial (`ia`)
 
-O projeto é dividido em domínios de negócio claros:
-
-*   **`usuarios`**: Gestão de identidade. Abandona o modelo padrão do Django em favor de login via E-mail e gerencia os papéis (Admin vs Representante).
-*   **`catalogo`**: Gestão global de `Categorias` e `Produtos` (Suplementação esportiva).
-*   **`vendas`**: Motor transacional. Relaciona `Pedidos` e `Itens do Pedido` com vínculo obrigatório ao ID do representante logado.
-*   **`ia`**: O cérebro do assistente virtual. Contém os *Services* (AgenteSQL) responsáveis pela comunicação com a API do Google e injeção do schema do banco.
-
-## 📂 Estrutura de Diretórios (Tree)
+Nesta branch, o aplicativo `ia` ganha protagonismo com a inclusão de templates visuais:
 
 ```text
-meu_projeto_erp/
-├── manage.py
-├── meu_projeto_erp/         # Configurações globais (settings.py, urls.py)
-├── usuarios/                # App de Autenticação Customizada
-├── catalogo/                # App de Produtos e Categorias
-├── vendas/                  # App de Pedidos (Multi-tenant)
-├── ia/                      # App de Inteligência Artificial
-│   ├── services.py          # Lógica do Agente RAG (Text-to-SQL)
-│   ├── views.py             # Endpoints da API e Views de Demonstração
-│   ├── urls.py              # Rotas da IA
-│   └── templates/
-│       └── ia/demo_ia.html  # Interface Front-end Vanilla JS
-├── testar_ia.py             # Script utilitário de diagnóstico da API Google
-├── .env                     # Variáveis de ambiente (ignorado no git)
-└── requirements.txt         # Dependências do projeto
+ia/
+├── services.py          # Lógica do Agente RAG (Text-to-SQL e humanização da resposta)
+├── views.py             # Endpoints da API e View especial que gera o Token Automático
+├── urls.py              # Rotas da API e da interface
+└── templates/
+    └── ia/demo_ia.html  # 🌟 Interface Front-end da Demonstração
 ```
 
-## 🚀 Como Executar o Projeto Localmente
+## 🚀 Como Executar a Demo Localmente
 
-### 1. Clone o repositório
+### 1. Clone o repositório e mude para a branch da Demo
 ```bash
 git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)
 cd seu-repositorio
+git checkout demo-AI
 ```
 
-### 2. Crie e ative o ambiente virtual
+### 2. Prepare o Ambiente Virtual e Dependências
 ```bash
-# Windows
 python -m venv venv
-venv\Scripts\activate
-
-# Linux/macOS
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3. Instale as dependências
-```bash
+# Ative o venv (Windows: venv\Scripts\activate | Linux/Mac: source venv/bin/activate)
 pip install -r requirements.txt
 ```
 
-### 4. Configure as Variáveis de Ambiente
-Crie um arquivo `.env` na raiz do projeto (mesmo nível do `manage.py`) e adicione sua chave de API do Google AI Studio:
+### 3. Configure as Variáveis de Ambiente
+Crie um arquivo `.env` na raiz do projeto e adicione sua chave de API do Google AI Studio:
 ```env
 GEMINI_API_KEY=sua_chave_secreta_aqui
 ```
 
-### 5. Execute as Migrações do Banco de Dados
+### 4. Execute as Migrações
 ```bash
 python manage.py makemigrations
 python manage.py migrate
 ```
 
-### 6. Crie o usuário de demonstração e popule o banco
+### 5. ⚠️ PASSO CRÍTICO: Crie o Usuário da Demo
+Para que a injeção automática de token funcione na tela de teste, o sistema procura por um usuário específico. Você **precisa** criar um superusuário com este e-mail:
 ```bash
 python manage.py createsuperuser
-# Dica: Crie o usuário admin@admin.com para testar a interface de demonstração visual
+# Quando pedir o e-mail, digite: admin@admin.com
+# A senha pode ser qualquer uma de sua escolha.
 ```
-*Acesse `http://127.0.0.1:8000/admin/` para cadastrar algumas categorias, produtos e pedidos fictícios.*
+*Dica: Acesse `http://127.0.0.1:8000/admin/` para popular o banco com categorias, produtos e pedidos para a IA ter o que buscar!*
 
-### 7. Inicie o Servidor
+### 6. Inicie o Servidor e Teste a Magia
 ```bash
 python manage.py runserver
 ```
+Abra o seu navegador e acesse a interface da IA:
+👉 **[http://127.0.0.1:8000/api/assistente-ia/demo/](http://127.0.0.1:8000/api/assistente-ia/demo/)**
 
-## 🌐 Endpoints Principais
-
-| Método | Endpoint | Descrição | Autenticação |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/api/usuarios/login/` | Autentica o usuário e retorna `access` e `refresh` tokens. | Nenhuma |
-| `POST` | `/api/assistente-ia/consultar/` | Recebe a pergunta em linguagem natural e retorna a resposta da IA baseada nos dados. | JWT Bearer |
-| `GET` | `/api/ia/demo/` | Acesso à tela de demonstração HTML/JS (Gera token automático para `admin@admin.com`). | Opcional |
-
-## 💡 Exemplos de Perguntas para a IA
-- *"Quais são as categorias de produtos cadastradas no sistema?"* (Busca global)
-- *"Qual produto eu mais vendi este mês?"* (Busca restrita ao Representante)
-- *"Quantos pedidos estão registrados no meu nome?"* (Busca restrita ao Representante)
+## 💡 O que perguntar para a IA?
+Teste o processamento de linguagem natural com perguntas como:
+- *"Quais são as categorias de produtos que temos no sistema?"* 
+- *"Temos algum produto da categoria Proteínas?"*
+- *"Qual foi o maior pedido registrado e qual o representante fez a venda?"* 
 
 ---
-*Desenvolvido com foco em boas práticas de Back-end, Segurança e Integração LLM.*
+*Branch destinada à demonstração de habilidades em Engenharia de Software, Integração de LLMs e Experiência do Desenvolvedor (DX).*
 ```
