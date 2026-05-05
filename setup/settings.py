@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'usuarios',
     'catalogo',
     'vendas',
+    'assistente_ia'
 ]
 
 MIDDLEWARE = [
