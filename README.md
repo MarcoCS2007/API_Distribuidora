@@ -62,8 +62,8 @@ Siga os passos abaixo para configurar o ambiente de desenvolvimento local:
 
 ### 1. Clone o repositório
 ```bash
-git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)
-cd seu-repositorio
+git clone https://github.com/MarcoCS2007/API_Distribuidora.git
+cd API_Distribuidora
 ```
 
 ### 2. Crie e ative o ambiente virtual
